@@ -17,5 +17,16 @@ node scripts/run-water-council.js
 
 The command writes `ui/waterCouncil.latest.json`. Open `ui/waterCouncil.html` in a local server (e.g. `python -m http.server`) to view the negotiation overlay.
 
+### LLM persona negotiation
+By default the negotiation uses deterministic persona messaging. If you want LLM-driven agent dialogue, set an API key and enable the client:
+
+```bash
+export OPENAI_API_KEY=your_key_here
+export OPENAI_MODEL=gpt-4o-mini
+node scripts/run-water-council.js
+```
+
+Set `LLM_ENABLED=false` to force deterministic messaging, or configure `OPENAI_BASE_URL` / `LLM_TIMEOUT_MS` as needed.
+
 ### Configuration
 Adjust utility weights, caps, and penalties in `scripts/run-water-council.js` under `sampleParams()`.
