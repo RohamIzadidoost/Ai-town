@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LlamaTown | Water Council</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="badge">AI Town · Llama3 via Ollama</div>
+        <h1>LlamaTown Water Council</h1>
+        <p>
+          Four autonomous agents debate and converge on a water policy. Give them an issue; the Minister must ship a FINAL DECISION before the turn limit.
+        </p>
+        <div class="hero-actions">
+          <button id="sampleIssue" class="ghost">Use drought sample</button>
+          <span class="hint">Model: llama3 · Agents: Minister, Hydrologist, Farmer, Infrastructure</span>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel form-panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Issue Intake</p>
+              <h2>Seed the debate</h2>
+            </div>
+            <span class="chip">MAX_TURNS defaults to 8</span>
+          </div>
+          <form id="issueForm" class="stack">
+            <label class="field">
+              <span>Issue to solve</span>
+              <textarea
+                id="issue"
+                rows="5"
+                placeholder="e.g., Reservoirs are at 30%, crops are stressed, city demand rising 10%. Decide how to ration, compensate farmers, and keep aquifers alive."
+              ></textarea>
+            </label>
+
+            <label class="field inline">
+              <div>
+                <span>Max turns</span>
+                <p class="microcopy">Total agent messages before Minister must decide.</p>
+              </div>
+              <div class="range-wrap">
+                <input type="range" id="maxTurns" min="4" max="16" value="8" />
+                <span id="maxTurnsValue" class="range-value">8</span>
+              </div>
+            </label>
+
+            <div class="actions">
+              <button type="submit" id="runBtn">Run the council</button>
+              <span id="status" class="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel chat-panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Debate Log</p>
+              <h2>Conversation</h2>
+            </div>
+            <span id="turnInfo" class="chip soft">Idle</span>
+          </div>
+          <div id="feed" class="feed empty">
+            <p>Agents will appear here after you submit an issue.</p>
+          </div>
+          <div id="decision" class="decision hidden"></div>
+        </section>
+      </main>
+
+      <section class="panel agents-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Role Prompting</p>
+            <h2>Who is in the room?</h2>
+          </div>
+          <span class="chip soft">System prompts</span>
+        </div>
+        <div id="agents" class="agent-grid"></div>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

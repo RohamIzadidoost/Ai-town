@@ -1,9 +1,14 @@
 {
-  "name": "ai-town-water-council",
-  "version": "0.1.0",
-  "private": true,
-  "type": "commonjs",
+  "name": "llamatown",
+  "version": "1.0.0",
+  "description": "AI town with role-guided agents powered by local Ollama llama3",
+  "main": "server.js",
   "scripts": {
-    "test": "node --test"
-  }
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
 }
