@@ -10,6 +10,9 @@ const {
   stepNegotiation,
 } = require("../server/game_theory/waterCouncil.js");
 const { createEpisode } = require("../server/db/waterCouncilEpisodes.js");
+const { createLlmClientFromEnv } = require("../server/llm/llmClient.js");
+const { createPersonaMessenger } = require("../server/llm/personaMessages.js");
+const { formatOfferJson } = require("../server/llm/promptUtils.js");
 
 function sampleParams(rng) {
   const between = (min, max) => min + (max - min) * rng();
@@ -54,47 +57,7 @@ function normalizeOutside(allocation) {
   };
 }
 
-function formatOfferJson(offer) {
-  return JSON.stringify(
-    {
-      x_hydro: Number(offer.hydro.toFixed(2)),
-      x_agri: Number(offer.agri.toFixed(2)),
-      x_infra: Number(offer.infra.toFixed(2)),
-    },
-    null,
-    2
-  );
-}
-
-function offerRationale(agentId, offer, xStar) {
-  const focus = {
-    hydrologist:
-      "Keeps ecological flows above the drought threshold while limiting agri overdraw.",
-    agriculture:
-      "Maintains irrigation reliability without compromising environmental caps.",
-    infrastructure:
-      "Protects reservoir reliability and service continuity for the city.",
-  };
-  return `Equilibrium guidance: target allocation x* = (${xStar.hydro.toFixed(
-    1
-  )}, ${xStar.agri.toFixed(1)}, ${xStar.infra.toFixed(
-    1
-  )}). ${focus[agentId]} Proposed allocation balances the basin.`;
-}
-
-function responseRationale(agentId, accept, offer) {
-  const decision = accept ? "Accept" : "Reject";
-  const focus = {
-    hydrologist: "ecosystem sustainability",
-    agriculture: "crop yield stability",
-    infrastructure: "service reliability",
-  };
-  return `${decision} — based on ${focus[agentId]} against the current offer (${offer.hydro.toFixed(
-    1
-  )}, ${offer.agri.toFixed(1)}, ${offer.infra.toFixed(1)}).`;
-}
-
-function runEpisode({ seed = 42, maxTurns = 9 } = {}) {
+async function runEpisode({ seed = 42, maxTurns = 9, llmEnabled = true } = {}) {
   const rng = mulberry32(seed);
   const params = sampleParams(rng);
   params.outsideOptionAllocation = normalizeOutside(
@@ -102,16 +65,19 @@ function runEpisode({ seed = 42, maxTurns = 9 } = {}) {
   );
 
   let state = createNegotiationState(params, maxTurns);
+  const llmClient = llmEnabled ? createLlmClientFromEnv() : null;
+  const messenger = createPersonaMessenger({ llmClient });
 
   while (!state.finalX) {
     const proposerId = state.agents[state.proposerIndex];
     const offer = proposeOffer(state, rng);
-    const offerMessage = `${proposerId} proposes:\n\n\
-\`\`\`json\n${formatOfferJson(offer)}\n\`\`\`\n\n${offerRationale(
+    const offerRationale = await messenger.offerMessage(
       proposerId,
       offer,
       state.xStar
-    )}`;
+    );
+    const offerMessage = `${proposerId} proposes:\n\n\
+\`\`\`json\n${formatOfferJson(offer)}\n\`\`\`\n\n${offerRationale}`;
     state = stepNegotiation(state, {
       type: "offer",
       proposerId,
@@ -124,11 +90,12 @@ function runEpisode({ seed = 42, maxTurns = 9 } = {}) {
         continue;
       }
       const accept = evaluateAcceptance(state, agentId, offer);
-      const responseMessage = `${agentId}: ${responseRationale(
+      const responseRationale = await messenger.responseMessage(
         agentId,
         accept,
         offer
-      )}`;
+      );
+      const responseMessage = `${agentId}: ${responseRationale}`;
       state = stepNegotiation(state, {
         type: "respond",
         agentId,
@@ -171,9 +138,15 @@ function writeEpisode(episode) {
 
 if (require.main === module) {
   const seed = Number(process.env.SEED || 42);
-  const episode = runEpisode({ seed });
-  const output = writeEpisode(episode);
-  console.log(`Water Council episode saved to ${output}`);
+  runEpisode({ seed })
+    .then((episode) => {
+      const output = writeEpisode(episode);
+      console.log(`Water Council episode saved to ${output}`);
+    })
+    .catch((error) => {
+      console.error("Failed to run Water Council episode:", error);
+      process.exitCode = 1;
+    });
 }
 
 module.exports = { runEpisode, writeEpisode };
