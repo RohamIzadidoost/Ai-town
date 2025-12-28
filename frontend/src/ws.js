@@ -3,5 +3,6 @@ export function connectWS(sessionId, onEvent) {
   ws.onmessage = (e) => {
     try { onEvent(JSON.parse(e.data)); } catch (_) {}
   };
+  ws.onerror = () => onEvent({ type: "error", message: "ws_error" });
   return ws;
 }

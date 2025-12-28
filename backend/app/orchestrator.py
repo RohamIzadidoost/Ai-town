@@ -1,93 +1,107 @@
 import asyncio
-from typing import Dict, List, Any
-from .roles import ROLE_ORDER, ROLE_BY_ID
-from .ollama_client import stream_chat
+from typing import Dict, Any, List
+from .roles import ROLE_BY_ID
+from .scenario.defaults import default_options
+from .game.state import init_state, GameState
+from .game.transition import transition, call_vote
+from .game.policy import choose_action
+from .game.utilities import utilities
+from .llm.render import build_render_messages
+from .llm.ollama_client import stream_chat
+from .llm.judge import judge_round
 
-def format_turn_instruction(role_id: str, round_idx: int, total_rounds: int, topic: str) -> str:
-    if role_id != "minister":
-        return (
-            f"Round {round_idx}/{total_rounds}. Topic: {topic}.\n"
-            "Respond in this structure:\n"
-            "1) Position\n"
-            "2) Evidence/Reasoning\n"
-            "3) Proposal\n"
-            "4) Critique (of one other proposal)\n"
-            "5) Question (ask one question)\n"
-            "Keep it concise but specific."
-        )
-    return (
-        f"Round {round_idx}/{total_rounds}. Topic: {topic}.\n"
-        "If this is NOT the final round: briefly summarize points of agreement/disagreement and set agenda for next round.\n"
-        "If this IS the final round: produce FINAL DECISION in JSON-like structure:\n"
-        "{\n"
-        '  "decision_option": "...",\n'
-        '  "action_plan": ["...","..."],\n'
-        '  "tradeoffs": "...",\n'
-        '  "risks": ["...","..."],\n'
-        '  "metrics": ["...","..."]\n'
-        "}\n"
-        "Then provide a short plain-language explanation after the structure."
-    )
+ROLE_ORDER = ["water_minister", "farmer", "environment", "citizen", "minister"]
 
-def build_messages(role_id: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
-    role = ROLE_BY_ID[role_id]
-    topic = state["topic"]
-    scenario = state.get("scenario") or {}
-
-    system = role["system"]
-    world = {
-        "topic": topic,
-        "scenario": scenario,
-    }
-
-    messages: List[Dict[str, str]] = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"World state (do not invent facts): {world}"},
-    ]
-
-    # Transcript
-    for m in state["transcript"]:
-        messages.append({"role": "user", "content": f'{m["role_name"]}: {m["content"]}'})
-
-    # Current instruction
-    instr = format_turn_instruction(
-        role_id=role_id,
-        round_idx=state["round_idx"],
-        total_rounds=state["rounds"],
-        topic=topic,
-    )
-    messages.append({"role": "user", "content": instr})
-    return messages
+def fuse_soft_into_state(s: GameState, judge: Dict):
+    # hybrid fusion
+    s.public_support = min(1.0, max(0.0, 0.60 * s.public_support + 0.40 * float(judge.get("public_acceptance", 0.5))))
+    s.fairness_index = min(1.0, max(0.0, 0.70 * s.fairness_index + 0.30 * float(judge.get("fairness_perception", 0.5))))
 
 async def run_simulation(session_id: str, state: Dict[str, Any], ws_send):
-    # state fields: topic, rounds, model, temperature, transcript(list), stop(bool), round_idx(int)
+    # Init structured state
+    opts = default_options()
+    gs = init_state(topic=state["topic"], options=opts)
+
+    transcript: List[Dict] = []
+    state["transcript"] = transcript
+    state["game_state"] = gs
+
+    await ws_send({"type": "session_start", "state": gs.model_dump()})
+
     for r in range(1, state["rounds"] + 1):
-        state["round_idx"] = r
+        gs.round_idx = r
+        round_msgs = []
 
         for role_id in ROLE_ORDER:
             if state.get("stop"):
                 await ws_send({"type": "stopped"})
                 return
 
-            role = ROLE_BY_ID[role_id]
-            await ws_send({"type": "turn_start", "role": role_id})
+            gs.t += 1
+            gs.speaker = role_id
+            await ws_send({"type": "turn_start", "role": role_id, "state": gs.model_dump()})
 
-            messages = build_messages(role_id, state)
+            option_ids = [o.id for o in gs.options]
+            a = choose_action(role_id, option_ids, round_idx=r, last_decision_locked=gs.decision_locked)
+
+            await ws_send({"type": "action_selected", "role": role_id, "action": a.model_dump()})
+
+            # Render message using LLM based on action
+            tail = transcript[-6:]  # small context window
+            msgs = build_render_messages(role_id, gs, a, tail)
 
             acc = []
-            async for delta in stream_chat(
-                model=state["model"],
-                messages=messages,
-                temperature=state["temperature"],
-            ):
+            async for delta in stream_chat(model=state["model"], messages=msgs, temperature=state["temperature"]):
                 acc.append(delta)
                 await ws_send({"type": "delta", "role": role_id, "text": delta})
 
             final = "".join(acc).strip()
             await ws_send({"type": "turn_end", "role": role_id, "message": final})
 
-            state["transcript"].append(
-                {"role_id": role_id, "role_name": role["name"], "content": final}
-            )
+            turn = {
+                "role_id": role_id,
+                "role_name": ROLE_BY_ID[role_id]["name"],
+                "action": a.model_dump(),
+                "content": final,
+                "round_idx": r,
+                "t": gs.t,
+            }
+            transcript.append(turn)
+            round_msgs.append(turn)
 
+            # Apply deterministic transition
+            gs = transition(gs, role_id, a)
+            await ws_send({"type": "state_update", "state": gs.model_dump()})
+
+            # If Minister decides, end early
+            if role_id == "minister" and a.type == "DECIDE":
+                gs.decision_locked = True
+                gs.decision_option = a.option_id or gs.decision_option
+                await ws_send({"type": "decision", "data": {"decision_option": gs.decision_option}, "state": gs.model_dump()})
+                pay = utilities(gs)
+                await ws_send({"type": "payoffs", "data": {"utilities": pay}, "state": gs.model_dump()})
+                await ws_send({"type": "done"})
+                return
+
+        # End of round: judge + fuse
+        judge = await judge_round(model=state["model"], s=gs, round_transcript=round_msgs)
+        fuse_soft_into_state(gs, judge)
+        await ws_send({"type": "judge_scores", "data": judge, "state": gs.model_dump()})
+
+        # Minister vote-lock heuristic
+        best = call_vote(gs)
+        await ws_send({"type": "round_end", "data": {"best_option": best}, "state": gs.model_dump()})
+
+        # If decision locked, next minister likely decides
+        if gs.decision_locked and r < state["rounds"]:
+            continue
+
+    # If no DECIDE triggered, finalize with best option
+    if not gs.decision_option:
+        best = call_vote(gs)
+        gs.decision_option = best
+
+    await ws_send({"type": "decision", "data": {"decision_option": gs.decision_option}, "state": gs.model_dump()})
+    pay = utilities(gs)
+    await ws_send({"type": "payoffs", "data": {"utilities": pay}, "state": gs.model_dump()})
     await ws_send({"type": "done"})
